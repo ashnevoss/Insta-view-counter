@@ -9,3 +9,5 @@ env/
 .env
 .instaloader-*
 session-*
+!session-avcreators.co
+

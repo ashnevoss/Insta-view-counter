@@ -268,36 +268,36 @@ def load_global_session():
             
     return False, None, "No active background session found."
 
-# Initialize session state variables
-if "authenticated" not in st.session_state:
-    st.session_state.authenticated = False
-if "loader" not in st.session_state:
-    st.session_state.loader = None
-if "checkpoint_username" not in st.session_state:
-    st.session_state.checkpoint_username = None
+# --- STEP 1: INITIALIZE STABLE STATE MACHINE ---
+if "L" not in st.session_state:
+    st.session_state.L = instaloader.Instaloader()
+if "auth_status" not in st.session_state:
+    st.session_state.auth_status = "logged_out"  # Options: logged_out, needs_2fa, logged_in
+if "target_username" not in st.session_state:
+    st.session_state.target_username = ""
 if "auth_method" not in st.session_state:
-    st.session_state.auth_method = None
+    st.session_state.auth_method = None  # secrets, file, dynamic
 if "explicit_logout" not in st.session_state:
     st.session_state.explicit_logout = False
 
-# Auto-load background session if applicable
+# Auto-load background session if not explicitly logged out and not logged in
 bg_msg = ""
-if not st.session_state.authenticated and not st.session_state.explicit_logout and st.session_state.checkpoint_username is None:
+if st.session_state.auth_status == "logged_out" and not st.session_state.explicit_logout:
     with st.spinner("Checking background session..."):
         bg_success, bg_result, bg_msg = load_global_session()
     if bg_success:
-        st.session_state.loader = bg_result
-        st.session_state.authenticated = True
+        st.session_state.L = bg_result
+        st.session_state.auth_status = "logged_in"
+        st.session_state.target_username = bg_result.context.username
         st.session_state.auth_method = "secrets" if "Secrets" in bg_msg else "file"
 
 # --- DISPLAY AUTHENTICATION STATUS ---
-if st.session_state.authenticated:
-    current_user = st.session_state.loader.context.username
+if st.session_state.auth_status == "logged_in":
     st.markdown(f"""
     <div class="status-badge-container">
         <div class="status-badge status-active">
             <span class="status-dot"></span>
-            Connected as @{current_user} ({st.session_state.auth_method.upper()})
+            Connected as @{st.session_state.target_username} ({st.session_state.auth_method.upper()})
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -312,8 +312,8 @@ else:
     """, unsafe_allow_html=True)
 
 # --- LOGIN & 2FA CONTROLS (IF NOT AUTHENTICATED) ---
-if not st.session_state.authenticated:
-    st.markdown("""
+if st.session_state.auth_status == "logged_out":
+    st.markdown(f"""
     <div class="glass-card">
         <h4 style="margin-top:0px; color:#ff4757; font-weight:700;">⚠️ Scraping Session Offline</h4>
         <p style="color:#bfaed6; font-size:0.95rem; margin-bottom: 0px;">
@@ -322,108 +322,109 @@ if not st.session_state.authenticated:
         </p>
     </div>
     """, unsafe_allow_html=True)
-    
-    # Check if a 2FA checkpoint challenge is currently pending
-    if st.session_state.checkpoint_username:
-        st.markdown(f"""
-        <div class="glass-card" style="border-color: rgba(240, 148, 51, 0.4);">
-            <h4 style="margin-top:0px; color:#f09433; font-weight:700;">📩 Verification Required</h4>
-            <p style="color:#bfaed6; font-size:0.95rem;">
-                Instagram sent a security code to your account (<strong>@{st.session_state.checkpoint_username}</strong>). Please check your SMS, Email, or Authenticator App.
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        verification_code = st.text_input("Enter 6-Digit Verification Code", placeholder="e.g. 123456")
-        
+
+    with st.expander("🔑 Log In with Instagram Burner Account", expanded=True):
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("Submit Verification Code", type="primary"):
-                if verification_code:
-                    with st.spinner("Submitting security code..."):
-                        try:
-                            # Send code to the waiting instaloader instance
-                            st.session_state.loader.two_factor_login(verification_code.strip())
-                            st.session_state.authenticated = True
-                            st.session_state.auth_method = "dynamic"
-                            st.session_state.checkpoint_username = None
-                            st.success("🎉 Account connected successfully!")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Verification Failed: {str(e)}")
-                else:
-                    st.warning("Please enter the code first.")
+            username = st.text_input("IG Username", placeholder="e.g. my_burner_123")
         with col2:
-            if st.button("Cancel & Reset"):
-                st.session_state.checkpoint_username = None
-                st.session_state.loader = None
-                st.rerun()
-    else:
-        # Show standard username/password login fields
-        with st.expander("🔑 Log In with Instagram Burner Account", expanded=True):
-            col1, col2 = st.columns(2)
-            with col1:
-                username = st.text_input("IG Username", placeholder="e.g. my_burner_123")
-            with col2:
-                password = st.text_input("IG Password", type="password", placeholder="••••••••")
-                
-            if st.button("Connect Account", type="primary"):
-                if username and password:
-                    with st.spinner("Attempting secure authentication..."):
-                        try:
-                            loader_temp = instaloader.Instaloader()
-                            loader_temp.login(username.strip(), password)
-                            
-                            # Success path
-                            st.session_state.loader = loader_temp
-                            st.session_state.authenticated = True
-                            st.session_state.auth_method = "dynamic"
-                            st.session_state.explicit_logout = False
-                            st.success(f"✅ Temporary access unlocked as @{username}!")
+            password = st.text_input("IG Password", type="password", placeholder="••••••••")
+            
+        if st.button("Connect Account", type="primary"):
+            if username and password:
+                with st.spinner("Initiating login transaction..."):
+                    try:
+                        # Fresh instance for clean login window
+                        st.session_state.L = instaloader.Instaloader()
+                        st.session_state.L.login(username.strip(), password)
+                        
+                        # Direct successful path
+                        st.session_state.auth_status = "logged_in"
+                        st.session_state.target_username = username.strip()
+                        st.session_state.auth_method = "dynamic"
+                        st.session_state.explicit_logout = False
+                        st.success(f"✅ Dynamic access unlocked as @{username}!")
+                        st.rerun()
+                        
+                    except instaloader.exceptions.TwoFactorAuthRequiredException:
+                        st.session_state.auth_status = "needs_2fa"
+                        st.session_state.target_username = username.strip()
+                        st.rerun()
+                        
+                    except Exception as e:
+                        error_msg = str(e)
+                        if "Checkpoint" in error_msg or "challenge" in error_msg or "fail" in error_msg:
+                            st.session_state.auth_status = "needs_2fa"
+                            st.session_state.target_username = username.strip()
+                            st.warning("⚠️ Security challenge intercepted.")
                             st.rerun()
-                            
-                        except instaloader.exceptions.TwoFactorAuthRequiredException:
-                            # 2FA triggered
-                            st.session_state.loader = loader_temp
-                            st.session_state.checkpoint_username = username.strip()
-                            st.rerun()
-                            
-                        except Exception as e:
-                            error_msg = str(e)
-                            if "Checkpoint" in error_msg or "challenge" in error_msg:
-                                # Treat checkpoint URL challenges like 2FA code challenges
-                                st.session_state.loader = loader_temp
-                                st.session_state.checkpoint_username = username.strip()
-                                st.rerun()
-                            else:
-                                st.error(f"❌ Login Failed: {error_msg}")
-                else:
-                    st.warning("Please enter both username and password.")
+                        else:
+                            st.error(f"❌ Login Failed: {error_msg}")
+            else:
+                st.warning("Please enter both username and password.")
+
+# --- STEP 3: CHALLENGE & 2FA INTERCEPT UI ---
+elif st.session_state.auth_status == "needs_2fa":
+    st.markdown(f"""
+    <div class="glass-card" style="border-color: rgba(240, 148, 51, 0.4);">
+        <h4 style="margin-top:0px; color:#f09433; font-weight:700;">🔐 Security Verification Required</h4>
+        <p style="color:#bfaed6; font-size:0.95rem; margin-bottom: 0px;">
+            Instagram has challenged the login attempt for <strong>@{st.session_state.target_username}</strong>. 
+            Please check your SMS, Email, or Authenticator App and input the 6-digit code.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    security_code = st.text_input("Enter 6-Digit Verification Code", placeholder="e.g. 123456")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Verify & Authenticate", type="primary"):
+            if security_code:
+                with st.spinner("Submitting security code..."):
+                    try:
+                        # Feed the terminal response back into the current pending context
+                        st.session_state.L.two_factor_login(security_code.strip())
+                        st.session_state.auth_status = "logged_in"
+                        st.session_state.auth_method = "dynamic"
+                        st.session_state.explicit_logout = False
+                        st.success("🎉 Verification complete!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Verification Failed. It might be expired or incorrect: {str(e)}")
+            else:
+                st.warning("Please enter your verification code.")
+    with col2:
+        if st.button("Cancel & Start Over"):
+            st.session_state.auth_status = "logged_out"
+            st.session_state.target_username = ""
+            st.session_state.L = instaloader.Instaloader()
+            st.rerun()
 
 # --- DISCONNECT / ADMIN EXPORT CONTROLS (IF AUTHENTICATED) ---
-if st.session_state.authenticated:
-    # 1. User Disconnect
+if st.session_state.auth_status == "logged_in":
     col_out1, col_out2 = st.columns([3, 1])
     with col_out2:
         if st.button("Disconnect Session", type="secondary"):
-            st.session_state.authenticated = False
-            st.session_state.loader = None
+            st.session_state.auth_status = "logged_out"
+            st.session_state.target_username = ""
             st.session_state.auth_method = None
+            st.session_state.L = instaloader.Instaloader()
             st.session_state.explicit_logout = True
             st.rerun()
             
-    # 2. Administrator Export Tool (Only if dynamically logged in)
+    # Administrator Export Tool (Only if dynamically logged in)
     if st.session_state.auth_method == "dynamic":
         with st.expander("🛠️ Administrator: Export Current Session to Secrets Vault", expanded=False):
             st.markdown(f"""
             ### 📋 Streamlit Secrets Configuration
-            You are successfully authenticated as `@{current_user}`. Since you bypassed Instagram's checkpoints via this UI, you can export this verified session to your **Streamlit Secrets vault** so the app stays logged in permanently in the cloud.
+            You are successfully authenticated as `@{st.session_state.target_username}`. Since you bypassed Instagram's checkpoints via this UI, you can export this verified session to your **Streamlit Secrets vault** so the app stays logged in permanently in the cloud.
             """)
             if st.button("Generate Secrets TOML Config", type="secondary"):
                 try:
                     # Save the active session to a temp file
-                    temp_filename = f"session-temp-{current_user}"
-                    st.session_state.loader.save_session_to_file(temp_filename)
+                    temp_filename = f"session-temp-{st.session_state.target_username}"
+                    st.session_state.L.save_session_to_file(temp_filename)
                     
                     # Read the binary data
                     with open(temp_filename, 'rb') as f:
@@ -437,7 +438,7 @@ if st.session_state.authenticated:
                     base64_session = base64.b64encode(session_bytes).decode('utf-8')
                     
                     secrets_toml = f"""[instagram]
-username = "{current_user}"
+username = "{st.session_state.target_username}"
 session_data = \"\"\"
 {base64_session}
 \"\"\""""
@@ -449,7 +450,8 @@ session_data = \"\"\"
 # --- STEP 2: REEL SCANNER INTERFACE ---
 st.markdown('<div class="glass-card">', unsafe_allow_html=True)
 st.subheader("🔗 Paste Reel Link")
-reel_url = st.text_input("Instagram Reel Link:", placeholder="https://www.instagram.com/reel/...", disabled=not st.session_state.authenticated, label_visibility="collapsed")
+is_ready = st.session_state.auth_status == "logged_in"
+reel_url = st.text_input("Instagram Reel Link:", placeholder="https://www.instagram.com/reel/...", disabled=not is_ready, label_visibility="collapsed")
 
 def extract_shortcode(url):
     pattern = r'(?:https?://)?(?:www\.)?instagram\.com/(?:p|reel)/([^/?#&]+)'
@@ -497,7 +499,7 @@ def get_reel_views(instance, shortcode):
         return {"success": False, "error": str(e)}
 
 # Action Button
-if st.button("Get Play Count", type="primary", disabled=not st.session_state.authenticated):
+if st.button("Get Play Count", type="primary", disabled=not is_ready):
     if not reel_url.strip():
         st.warning("Please paste a link first.")
     else:
@@ -506,7 +508,7 @@ if st.button("Get Play Count", type="primary", disabled=not st.session_state.aut
             if not shortcode:
                 st.error("Invalid Instagram URL structure. Please make sure the URL contains '/reel/SHORTCODE' or '/p/SHORTCODE'.")
             else:
-                data = get_reel_views(st.session_state.loader, shortcode)
+                data = get_reel_views(st.session_state.L, shortcode)
                 if data["success"]:
                     st.balloons()
                     st.markdown("""

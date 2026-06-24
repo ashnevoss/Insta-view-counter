@@ -2,6 +2,8 @@ import streamlit as st
 import instaloader
 import re
 import os
+import base64
+import pickle
 
 # --- STREAMLIT UI CONFIG ---
 st.set_page_config(page_title="Instagram Reel View Counter", page_icon="📊", layout="centered")
@@ -231,24 +233,46 @@ DEFAULT_USERNAME = st.secrets.get("IG_USERNAME", "avcreators.co")
 SESSION_FILE = f"session-{DEFAULT_USERNAME}"
 
 @st.cache_resource(show_spinner=False)
-def load_trusted_session(username, filename):
-    if not os.path.exists(filename):
-        return False, f"Session file '{filename}' not found."
-    try:
-        instance = instaloader.Instaloader(max_connection_attempts=1)
-        instance.load_session_from_file(username, filename=filename)
-        # Verify the session is alive using test_login()
-        logged_in_user = instance.test_login()
-        if logged_in_user:
-            return True, instance
-        else:
-            return False, "Session in file is expired or invalid."
-    except Exception as e:
-        return False, str(e)
+def load_global_session():
+    # Priority 1: Streamlit Cloud Secrets
+    if "instagram" in st.secrets:
+        try:
+            username = st.secrets["instagram"].get("username")
+            session_str = st.secrets["instagram"].get("session_data")
+            if username and session_str:
+                instance = instaloader.Instaloader(max_connection_attempts=1)
+                
+                # Reconstruct cookies session natively
+                session_dict = pickle.loads(base64.b64decode(session_str.strip().encode()))
+                instance.context.load_session(username, session_dict)
+                
+                # Verify session using test_login()
+                logged_in_user = instance.test_login()
+                if logged_in_user:
+                    return True, instance, f"Connected via Cloud Secrets (@{username})"
+                else:
+                    return False, None, "Session in Cloud Secrets is expired or invalid."
+        except Exception as e:
+            return False, None, f"Failed to load from Cloud Secrets: {str(e)}"
+
+    # Priority 2: Local Session File
+    if os.path.exists(SESSION_FILE):
+        try:
+            instance = instaloader.Instaloader(max_connection_attempts=1)
+            instance.load_session_from_file(DEFAULT_USERNAME, filename=SESSION_FILE)
+            logged_in_user = instance.test_login()
+            if logged_in_user:
+                return True, instance, f"Connected via Session File (@{DEFAULT_USERNAME})"
+            else:
+                return False, None, f"Session file '{SESSION_FILE}' is expired or invalid."
+        except Exception as e:
+            return False, None, f"Failed to load session file: {str(e)}"
+            
+    return False, None, "No active session configuration found (Secrets or Session File)."
 
 # Attempt to load the background session
 with st.spinner("Checking background login status..."):
-    bg_success, bg_result = load_trusted_session(DEFAULT_USERNAME, SESSION_FILE)
+    bg_success, bg_result, bg_msg = load_global_session()
 
 L = None
 is_authenticated = False
@@ -260,12 +284,12 @@ if bg_success:
     <div class="status-badge-container">
         <div class="status-badge status-active">
             <span class="status-dot"></span>
-            Background Scraping Active (@{DEFAULT_USERNAME})
+            {bg_msg}
         </div>
     </div>
     """, unsafe_allow_html=True)
 else:
-    st.markdown("""
+    st.markdown(f"""
     <div class="status-badge-container">
         <div class="status-badge status-inactive">
             <span class="status-dot"></span>
@@ -276,10 +300,13 @@ else:
 
 # --- FALLBACK AUTHENTICATION & SETUP CONTROLS ---
 if not is_authenticated:
-    st.markdown("""
+    st.markdown(f"""
     <div class="glass-card">
-        <h4 style="margin-top:0px; color:#ff4757;">⚠️ Background Access Not Configured</h4>
-        <p style="color:#bfaed6; font-size:0.95rem;">To avoid Instagram security walls (checkpoints) in cloud environments, you need to generate a local session file. As a fallback, you can log in below with an alternative burner account to run scans temporarily.</p>
+        <h4 style="margin-top:0px; color:#ff4757;">⚠️ Background Access Offline</h4>
+        <p style="color:#bfaed6; font-size:0.95rem; margin-bottom: 0px;">
+            The background session has not been configured or has expired. 
+            <strong>Reason:</strong> {bg_msg}
+        </p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -313,34 +340,61 @@ if not is_authenticated:
                     st.error(f"❌ Fallback Login Failed: {result}")
 
 # --- ADMIN SETUP EXPANDER (ALWAYS ACCESSIBLE FOR CONVENIENCE) ---
-with st.expander("⚙️ Administrator: Generate Session File", expanded=not bg_success and not os.path.exists(SESSION_FILE)):
+with st.expander("⚙️ Administrator: Streamlit Secrets Vault Setup", expanded=not bg_success and not os.path.exists(SESSION_FILE)):
     st.markdown(f"""
-    ### 🔑 Generate Trusted Session File Locally
-    If you are running this app locally on your machine (where Instagram trusts your login location):
-    1. Enter the credentials of your background scraping account (`@{DEFAULT_USERNAME}` or another).
-    2. Click **Generate and Save Session**.
-    3. The application will log in and save a file named `session-<username>` in your project folder.
-    4. Commit and push this session file to GitHub to let the cloud server scrape without checkpoints.
+    ### 🔑 Generate Base64 Session String Natively
+    To bypass checkpoints, you can retrieve your account's cookies session, convert it to a Base64 string, and paste it directly into Streamlit's secrets vault.
+    
+    <strong>How to do this using this dashboard:</strong>
+    1. Run this Streamlit app **locally on your MacBook** (where Instagram trusts your login location).
+    2. Enter the credentials of your background scraping account (`@{DEFAULT_USERNAME}` or another).
+    3. Click **Generate Secrets Config**.
+    4. The app will log in, serialize the active session into a Base64 string, and print the exact TOML block.
+    5. Copy that TOML block and paste it directly in your **Streamlit Cloud Settings -> Secrets** dashboard!
     """)
     admin_user = st.text_input("Instagram Username", value=DEFAULT_USERNAME, placeholder="e.g. avcreators.co")
     admin_pass = st.text_input("Instagram Password", type="password", placeholder="••••••••", key="admin_pwd_field")
     
-    if st.button("Generate & Save Session", type="secondary"):
+    if st.button("Generate Secrets Config", type="secondary"):
         if not admin_user or not admin_pass:
             st.error("Please enter both username and password.")
         else:
-            with st.spinner("Logging in to generate and save session..."):
+            with st.spinner("Logging in locally to generate base64 session configuration..."):
                 try:
+                    # 1. Login using a temporary instance
                     L_gen = instaloader.Instaloader()
                     L_gen.login(admin_user, admin_pass)
+                    
+                    # 2. Save session to a file
                     output_file = f"session-{admin_user}"
                     L_gen.save_session_to_file(output_file)
-                    st.success(f"🎉 Session saved successfully as `{output_file}`!")
-                    st.info("👉 **Next Step:** Commit this file to GitHub. Git ignores other sessions but is configured to track this one.")
-                    # Clear cache to force reload
+                    
+                    # 3. Read the binary session file contents
+                    with open(output_file, 'rb') as f:
+                        session_bytes = f.read()
+                    
+                    # 4. Convert it to a Base64 string
+                    base64_session = base64.b64encode(session_bytes).decode('utf-8')
+                    
+                    st.success("🎉 Authentication successful & Session file saved locally!")
+                    st.balloons()
+                    
+                    # 5. Output the TOML block
+                    secrets_toml = f"""[instagram]
+username = "{admin_user}"
+session_data = \"\"\"
+{base64_session}
+\"\"\""""
+                    st.markdown("### 📋 Copy Streamlit Secrets Config")
+                    st.write("Paste this block in Streamlit Cloud Dashboard (under **Settings -> Secrets**):")
+                    st.code(secrets_toml, language="toml")
+                    
+                    st.info("👉 Note: We also saved the session file locally. Your `.gitignore` is configured to track this file so you can commit it to Git as a fallback if you wish.")
+                    
+                    # Clear local Streamlit cache to load the newly generated credentials
                     st.cache_resource.clear()
                 except Exception as e:
-                    st.error(f"❌ Failed to generate session: {e}")
+                    st.error(f"❌ Failed to generate config: {e}")
 
 # --- STEP 2: REEL SCANNER INTERFACE ---
 st.markdown('<div class="glass-card">', unsafe_allow_html=True)

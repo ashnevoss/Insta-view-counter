@@ -229,7 +229,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- CONFIGURATION & SESSION LOADING ---
-DEFAULT_USERNAME = st.secrets.get("IG_USERNAME", "avcreators.co")
+DEFAULT_USERNAME = st.secrets.get("IG_USERNAME", "dino0112233")
 SESSION_FILE = f"session-{DEFAULT_USERNAME}"
 
 @st.cache_resource(show_spinner=False)

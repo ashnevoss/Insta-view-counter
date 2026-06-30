@@ -208,16 +208,16 @@ SESSION_FILE = f"session-{SESSION_USERNAME}"
 
 @st.cache_resource(show_spinner=False)
 def load_global_session():
-    instance = instaloader.Instaloader(max_connection_attempts=1)
+    instance = instaloader.Instaloader()
     if os.path.exists(SESSION_FILE):
         try:
             # Load the trusted session file directly from the repo root
             instance.load_session_from_file(SESSION_USERNAME, filename=SESSION_FILE)
-            return True, instance, "Global session file loaded perfectly!"
+            return True, instance, f"Background Scraping Active (@{SESSION_USERNAME})"
         except Exception as e:
-            return False, instance, f"Failed to restore session: {str(e)}"
+            return False, instance, f"Session File Error: {str(e)}"
     else:
-        return False, instance, f"Session file '{SESSION_FILE}' not found in project directory. Operating in public guest mode."
+        return False, instance, "Running in Unauthenticated Guest Mode"
 
 # Connect to the pre-authenticated session
 with st.spinner("Initializing scraping session..."):
@@ -229,7 +229,7 @@ if success:
     <div class="status-badge-container">
         <div class="status-badge status-active">
             <span class="status-dot"></span>
-            Background Scraping Active (@{SESSION_USERNAME})
+            {message}
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -238,11 +238,10 @@ else:
     <div class="status-badge-container">
         <div class="status-badge status-inactive">
             <span class="status-dot"></span>
-            Scraping Session Offline (Guest Mode)
+            {message}
         </div>
     </div>
     """, unsafe_allow_html=True)
-    st.warning(f"⚠️ {message}")
 
 st.markdown("---")
 
@@ -258,13 +257,18 @@ def extract_shortcode(url):
 
 def get_reel_views(instance, shortcode):
     try:
-        post = instaloader.Post.from_shortcode(instance.context, shortcode)
+        # Fetch post data
+        try:
+            post = instaloader.Post.from_shortcode(instance.context, shortcode)
+        except Exception as fetch_err:
+            post = None
+            error_log = str(fetch_err)
         
-        # Safe check to prevent the 'NoneType' crash
+        # CRITICAL FIX: Safe check to prevent the 'NoneType' crash completely
         if post is None:
             return {
                 "success": False,
-                "error": "Instagram returned an empty response. Your session file has likely expired.",
+                "error": "Instagram returned an empty response or threw an exception during fetch.",
                 "is_expired": True
             }
             
@@ -338,7 +342,7 @@ if st.button("Get Play Count", type="primary"):
                     st.error("❌ Failed to fetch data from Instagram.")
                     err_msg = data.get("error", "")
                     if data.get("is_expired") or "401" in err_msg or "login" in err_msg.lower():
-                        st.info("💡 **How to fix:** Your session file may be expired or invalid. Ask your Antigravity agent to generate a fresh session file to overwrite the old one.")
+                        st.info("💡 **Why this happens:** Instagram is temporarily throttling requests from this server IP, or your session file has been logged out by Meta. Give it a few minutes or refresh your login file inside Antigravity.")
                     else:
                         st.caption(f"Error breakdown: {err_msg}")
 st.markdown('</div>', unsafe_allow_html=True)

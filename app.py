@@ -208,16 +208,16 @@ SESSION_FILE = f"session-{SESSION_USERNAME}"
 
 @st.cache_resource(show_spinner=False)
 def load_global_session():
+    instance = instaloader.Instaloader(max_connection_attempts=1)
     if os.path.exists(SESSION_FILE):
         try:
-            instance = instaloader.Instaloader(max_connection_attempts=1)
             # Load the trusted session file directly from the repo root
             instance.load_session_from_file(SESSION_USERNAME, filename=SESSION_FILE)
             return True, instance, "Global session file loaded perfectly!"
         except Exception as e:
-            return False, None, f"Failed to restore session: {str(e)}"
+            return False, instance, f"Failed to restore session: {str(e)}"
     else:
-        return False, None, f"Session file '{SESSION_FILE}' not found in project directory."
+        return False, instance, f"Session file '{SESSION_FILE}' not found in project directory. Operating in public guest mode."
 
 # Connect to the pre-authenticated session
 with st.spinner("Initializing scraping session..."):
@@ -238,19 +238,18 @@ else:
     <div class="status-badge-container">
         <div class="status-badge status-inactive">
             <span class="status-dot"></span>
-            Scraping Session Offline
+            Scraping Session Offline (Guest Mode)
         </div>
     </div>
     """, unsafe_allow_html=True)
-    st.error(f"❌ Error: {message}")
-    st.info("💡 Make sure you have the session file placed in your root folder and pushed to GitHub.")
+    st.warning(f"⚠️ {message}")
 
 st.markdown("---")
 
 # --- STEP 2: REEL SCANNER INTERFACE ---
 st.markdown('<div class="glass-card">', unsafe_allow_html=True)
 st.subheader("🔗 Paste Reel Link")
-reel_url = st.text_input("Instagram Reel Link:", placeholder="https://www.instagram.com/reel/...", disabled=not success, label_visibility="collapsed")
+reel_url = st.text_input("Instagram Reel Link:", placeholder="https://www.instagram.com/reel/...", label_visibility="collapsed")
 
 def extract_shortcode(url):
     pattern = r'(?:https?://)?(?:www\.)?instagram\.com/(?:p|reel)/([^/?#&]+)'
@@ -261,6 +260,14 @@ def get_reel_views(instance, shortcode):
     try:
         post = instaloader.Post.from_shortcode(instance.context, shortcode)
         
+        # Safe check to prevent the 'NoneType' crash
+        if post is None:
+            return {
+                "success": False,
+                "error": "Instagram returned an empty response. Your session file has likely expired.",
+                "is_expired": True
+            }
+            
         # 1. Start with the default legacy view count fallback
         plays = post.video_view_count 
         
@@ -272,15 +279,15 @@ def get_reel_views(instance, shortcode):
         try:
             if hasattr(post, '_iphone_struct') and post._iphone_struct:
                 struct = post._iphone_struct
-                
-                # Check directly in the root of the structure
-                if 'play_count' in struct and struct['play_count']:
-                    plays = struct['play_count']
-                elif 'video_play_count' in struct and struct['video_play_count']:
-                    plays = struct['video_play_count']
-                # Check inside the media/video node if nested
-                elif 'video_codec' in struct or 'image_versions2' in struct:
-                    plays = struct.get('play_count', plays)
+                if isinstance(struct, dict):
+                    # Check directly in the root of the structure
+                    if 'play_count' in struct and struct['play_count']:
+                        plays = struct['play_count']
+                    elif 'video_play_count' in struct and struct['video_play_count']:
+                        plays = struct['video_play_count']
+                    # Check inside the media/video node if nested
+                    elif 'video_codec' in struct or 'image_versions2' in struct:
+                        plays = struct.get('play_count', plays)
         except Exception:
             pass
 
@@ -298,11 +305,11 @@ def get_reel_views(instance, shortcode):
         return {"success": False, "error": str(e)}
 
 # Action Button
-if st.button("Get Play Count", type="primary", disabled=not success):
+if st.button("Get Play Count", type="primary"):
     if not reel_url.strip():
         st.warning("Please paste a link first.")
     else:
-        with st.spinner("Scraping metrics via active session..."):
+        with st.spinner("Scraping metrics..."):
             shortcode = extract_shortcode(reel_url)
             if not shortcode:
                 st.error("Invalid Instagram URL structure. Please make sure the URL contains '/reel/SHORTCODE' or '/p/SHORTCODE'.")
@@ -328,8 +335,12 @@ if st.button("Get Play Count", type="primary", disabled=not success):
                     </div>
                     """.format(data['views'], data['owner'], data['title']), unsafe_allow_html=True)
                 else:
-                    st.error("Failed to fetch data from Instagram.")
-                    st.exception(data["error"])
+                    st.error("❌ Failed to fetch data from Instagram.")
+                    err_msg = data.get("error", "")
+                    if data.get("is_expired") or "401" in err_msg or "login" in err_msg.lower():
+                        st.info("💡 **How to fix:** Your session file may be expired or invalid. Ask your Antigravity agent to generate a fresh session file to overwrite the old one.")
+                    else:
+                        st.caption(f"Error breakdown: {err_msg}")
 st.markdown('</div>', unsafe_allow_html=True)
 
 # --- FOOTER ---
